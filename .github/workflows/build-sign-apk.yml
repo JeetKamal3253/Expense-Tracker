@@ -1,0 +1,93 @@
+
+name: Build & Sign Release APK (Android 15)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-sign:
+    runs-on: ubuntu-latest
+
+    # Adjust versions if needed; API 35 = Android 15
+    env:
+      ANDROID_SDK_ROOT: /usr/local/android-sdk
+      API_LEVEL: 35
+      BUILD_TOOLS_VERSION: 35.0.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK Command-line tools
+        run: |
+          sudo mkdir -p $ANDROID_SDK_ROOT
+          sudo chown $USER:$USER $ANDROID_SDK_ROOT
+          curl -fo cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          unzip -qq cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
+          mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
+
+      - name: Accept SDK licenses & install platforms/build-tools
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
+          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-${API_LEVEL}" \
+            "platform-tools" \
+            "build-tools;${BUILD_TOOLS_VERSION}"
+
+      - name: Set up Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Decode keystore from secret
+        shell: bash
+        run: |
+          echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > expense-temp-key.jks
+
+      - name: Build release (assembleRelease)
+        run: |
+          ./gradlew clean assembleRelease
+
+      - name: Sign APK with apksigner
+        run: |
+          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$unsigned_apk" ]; then
+            echo "Unsigned APK not found at $unsigned_apk"
+            exit 1
+          fi
+
+          $ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/apksigner sign \
+            --ks expense-temp-key.jks \
+            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+            --ks-pass pass:"${{ secrets.KEYSTORE_PASSWORD }}" \
+            --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
+            --in "$unsigned_apk" \
+            --out "$signed_apk"
+
+      - name: Verify signature
+        run: |
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          $ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/apksigner verify --verbose "$signed_apk"
+
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExpenseTrackerApp-Android15-signed
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
