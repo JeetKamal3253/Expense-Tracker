@@ -43,24 +43,14 @@ jobs:
             "platform-tools" \
             "build-tools;${BUILD_TOOLS_VERSION}"
 
-      - name: Set up Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
       - name: Decode keystore from secret
         shell: bash
         run: |
           echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > expense-temp-key.jks
 
-      - name: Build release (assembleRelease)
-        run: |
-          ./gradlew clean assembleRelease
+      - name: Build release APK
+        run: ./gradlew clean assembleRelease
+        working-directory: androi
 
       - name: Sign APK with apksigner
         run: |
