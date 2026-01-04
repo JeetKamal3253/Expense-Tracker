@@ -1,4 +1,5 @@
-name: Build & Sign Release APK (Android 15)
+
+name: Build & Sign APK
 
 on:
   workflow_dispatch:
@@ -9,57 +10,29 @@ jobs:
   build-sign:
     runs-on: ubuntu-latest
 
-    # Adjust versions if needed; API 35 = Android 15
     env:
       ANDROID_SDK_ROOT: /usr/local/android-sdk
-      API_LEVEL: 35
-      BUILD_TOOLS_VERSION: 35.0.0
+      API_LEVEL: 35                # Android 15
+      BUILD_TOOLS_VERSION: 35.0.0  # Build Tools for API 35
 
     steps:
+      # 1) Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # 2) Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle (provisions Gradle if wrapper is missing)
+      # 3) Optional: Setup Gradle (caching & provisioning)
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        # Optional: pin Gradle version
-        # with:
-        #   gradle-version: '8.10'
-      
-      # If your app is in a subfolder, uncomment:
-      # working-directory: android
-      
-      - name: Generate Gradle Wrapper (if missing)
-        run: |
-          if [ ! -f ./gradlew ]; then
-            echo "gradlew not found; generating wrapper"
-            gradle wrapper
-          else
-            echo "gradlew already present"
-          fi
-        # working-directory: android
-      
-      - name: Make gradlew executable
-        run: |
-          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
-        # working-directory: android
-      
-      - name: Build Release APK (prefer wrapper, fallback to gradle)
-        run: |
-          if [ -f ./gradlew ]; then
-            ./gradlew clean assembleRelease
-          else
-            echo "Wrapper still not found; using gradle directly"
-            gradle clean assembleRelease
-          fi
-        # working-directory: android
 
-      - name: Install Android SDK Command-line tools
+      # 4) Install Android SDK Command-line Tools
+      - name: Install Android SDK CLI tools
         run: |
           sudo mkdir -p $ANDROID_SDK_ROOT
           sudo chown $USER:$USER $ANDROID_SDK_ROOT
@@ -68,7 +41,8 @@ jobs:
           unzip -qq cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
           mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
 
-      - name: Accept SDK licenses & install platforms/build-tools
+      # 5) Accept licenses & install Platform + Build Tools
+      - name: Accept licenses & install platforms/build-tools
         run: |
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
           $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
@@ -76,62 +50,56 @@ jobs:
             "platform-tools" \
             "build-tools;${BUILD_TOOLS_VERSION}"
 
-      - name: Print working directory and list files
+      # 6) Ensure Gradle Wrapper executable
+      - name: Make gradlew executable
         run: |
-          pwd
-          ls -la
-      
-      - name: List Gradle wrapper files
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
+
+      # 7) Build release APK (prefer wrapper; fallback to gradle if wrapper missing)
+      - name: Build release
         run: |
-          find . -maxdepth 3 -type f -name "gradlew" -o -name "gradle-wrapper.properties" -o -name "gradle-wrapper.jar"
+          if [ -f ./gradlew ]; then
+            ./gradlew clean assembleRelease
+          else
+            echo "Gradle Wrapper not found; using 'gradle' directly."
+            gradle clean assembleRelease
+          fi
+        # If your Android project is in a subfolder (e.g., android/), uncomment:
         # working-directory: android
 
-
-      - name: Set up Gradle cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Decode keystore from secret
-        shell: bash
+      # 8) Decode keystore from secret
+      - name: Decode keystore
         run: |
-          echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > expense-temp-key.jks
+          echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > release-key.jks
 
-      - name: Build release (assembleRelease)
+      # 9) Sign APK with apksigner
+      - name: Sign APK
         run: |
-          ./gradlew clean assembleRelease
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED="app/build/outputs/apk/release/app-release.apk"
 
-      - name: Sign APK with apksigner
-        run: |
-          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
-          signed_apk="app/build/outputs/apk/release/app-release.apk"
-
-          if [ ! -f "$unsigned_apk" ]; then
-            echo "Unsigned APK not found at $unsigned_apk"
-            exit 1
+          if [ ! -f "$UNSIGNED" ]; then
+            echo "Unsigned APK not found at $UNSIGNED" && exit 1
           fi
 
           $ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/apksigner sign \
-            --ks expense-temp-key.jks \
+            --ks release-key.jks \
             --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
             --ks-pass pass:"${{ secrets.KEYSTORE_PASSWORD }}" \
             --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
-            --in "$unsigned_apk" \
-            --out "$signed_apk"
+            --in "$UNSIGNED" \
+            --out "$SIGNED"
 
+      # 10) Verify signature
       - name: Verify signature
         run: |
-          signed_apk="app/build/outputs/apk/release/app-release.apk"
-          $ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/apksigner verify --verbose "$signed_apk"
+          SIGNED="app/build/outputs/apk/release/app-release.apk"
+          $ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS_VERSION}/apksigner verify --verbose "$SIGNED"
 
-      - name: Upload signed APK artifact
+      # 11) Upload signed APK artifact
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: ExpenseTrackerApp-Android15-signed
+          name: Release-APK
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
