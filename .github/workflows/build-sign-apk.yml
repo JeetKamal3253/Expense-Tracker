@@ -25,6 +25,40 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Setup Gradle (provisions Gradle if wrapper is missing)
+        uses: gradle/actions/setup-gradle@v4
+        # Optional: pin Gradle version
+        # with:
+        #   gradle-version: '8.10'
+      
+      # If your app is in a subfolder, uncomment:
+      # working-directory: android
+      
+      - name: Generate Gradle Wrapper (if missing)
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "gradlew not found; generating wrapper"
+            gradle wrapper
+          else
+            echo "gradlew already present"
+          fi
+        # working-directory: android
+      
+      - name: Make gradlew executable
+        run: |
+          if [ -f ./gradlew ]; then chmod +x ./gradlew; fi
+        # working-directory: android
+      
+      - name: Build Release APK (prefer wrapper, fallback to gradle)
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew clean assembleRelease
+          else
+            echo "Wrapper still not found; using gradle directly"
+            gradle clean assembleRelease
+          fi
+        # working-directory: android
+
       - name: Install Android SDK Command-line tools
         run: |
           sudo mkdir -p $ANDROID_SDK_ROOT
